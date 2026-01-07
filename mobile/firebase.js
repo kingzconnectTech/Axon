@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, signInAnonymously } from "firebase/auth";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut as fbSignOut, sendPasswordResetEmail } from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: "AIzaSyB1cwnQm2Tbn86kg83mgsxndTa0pnp39gc",
@@ -12,9 +12,20 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export async function ensureAuth() {
-  const current = auth.currentUser;
-  if (current) return current;
-  const { user } = await signInAnonymously(auth);
+export function watchAuth(callback) {
+  return onAuthStateChanged(auth, callback);
+}
+export async function signInEmail(email, password) {
+  const { user } = await signInWithEmailAndPassword(auth, email, password);
   return user;
+}
+export async function registerEmail(email, password) {
+  const { user } = await createUserWithEmailAndPassword(auth, email, password);
+  return user;
+}
+export async function signOut() {
+  await fbSignOut(auth);
+}
+export async function requestPasswordReset(email) {
+  await sendPasswordResetEmail(auth, email);
 }

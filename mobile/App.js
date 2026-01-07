@@ -3,7 +3,8 @@ import { SafeAreaView, View, Text, TouchableOpacity } from "react-native";
 import SignalOnly from "./components/SignalOnly";
 import AutoTrading from "./components/AutoTrading";
 import Profile from "./components/Profile";
-import { ensureAuth, auth } from "./firebase";
+import { watchAuth } from "./firebase";
+import Login from "./components/Login";
 
 export default function App() {
   const [tab, setTab] = useState("signal");
@@ -11,19 +12,24 @@ export default function App() {
   const [idToken, setIdToken] = useState(null);
 
   useEffect(() => {
-    (async () => {
-      const user = await ensureAuth();
-      const token = await user.getIdToken();
-      setIdToken(token);
-      setUid(user.uid);
-      try {
-        const res = await fetch("http://localhost:8000/auth/verify-token", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        await res.json();
-      } catch (e) {}
-    })();
+    const unsub = watchAuth(async (user) => {
+      if (user) {
+        const token = await user.getIdToken();
+        setIdToken(token);
+        setUid(user.uid);
+        try {
+          const res = await fetch("http://localhost:8000/auth/verify-token", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          await res.json();
+        } catch (e) {}
+      } else {
+        setUid(null);
+        setIdToken(null);
+      }
+    });
+    return () => unsub && unsub();
   }, []);
   return (
     <SafeAreaView style={{ flex: 1 }}>
@@ -39,9 +45,21 @@ export default function App() {
         </TouchableOpacity>
       </View>
       <View style={{ flex: 1 }}>
-        {tab === "signal" && <SignalOnly idToken={idToken} />}
-        {tab === "auto" && <AutoTrading idToken={idToken} />}
-        {tab === "profile" && <Profile uid={uid} idToken={idToken} />}
+        {!uid ? (
+          <Login
+            onLoggedIn={async (user) => {
+              const token = await user.getIdToken();
+              setIdToken(token);
+              setUid(user.uid);
+            }}
+          />
+        ) : (
+          <>
+            {tab === "signal" && <SignalOnly idToken={idToken} />}
+            {tab === "auto" && <AutoTrading idToken={idToken} />}
+            {tab === "profile" && <Profile uid={uid} idToken={idToken} />}
+          </>
+        )}
       </View>
     </SafeAreaView>
   );

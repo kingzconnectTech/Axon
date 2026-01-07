@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, Query
 from pydantic import BaseModel
 import firebase_admin
-from firebase_admin import auth
+from firebase_admin import auth, credentials
 import redis
 from .schemas import SignalStartRequest, SignalStopRequest, AutoTradingConfig, SessionStartResponse
 from .tasks import start_user_session
@@ -22,7 +22,11 @@ app = FastAPI()
 try:
     firebase_admin.get_app()
 except ValueError:
-    firebase_admin.initialize_app()
+    cred_path = os.getenv("FIREBASE_CREDENTIALS") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if cred_path and os.path.exists(cred_path):
+        firebase_admin.initialize_app(credentials.Certificate(cred_path))
+    else:
+        firebase_admin.initialize_app()
 
 redis_host = os.getenv("REDIS_HOST", "redis")
 redis_port = int(os.getenv("REDIS_PORT", "6379"))
@@ -112,6 +116,10 @@ def session_start(config: AutoTradingConfig, authorization: Optional[str] = Head
             "wins": 0,
             "loss_streak": 0,
             "trades": 0,
+            "reject_count": 0,
+            "retry_count": 0,
+            "heartbeat_missed": 0,
+            "heartbeat": 0,
         },
     )
     r.expire(key, 86400)
@@ -205,7 +213,18 @@ def me_sessions(limit: int = Query(50, ge=1, le=200), authorization: Optional[st
     uid = _verify_id_token(authorization)
     with SessionLocal() as db:
         rows = db.query(DbSession).filter(DbSession.user_id == uid).order_by(DbSession.started_at.desc()).limit(limit).all()
-        return [{"id": s.id, "mode": s.mode, "status": s.status, "profit": s.profit, "trades": s.trades, "started_at": s.started_at.isoformat()} for s in rows]
+        result = []
+        for s in rows:
+            key = _session_key(uid, s.id)
+            counters = {"reject_count": 0, "retry_count": 0, "heartbeat_missed": 0, "heartbeat": 0}
+            if r.exists(key):
+                reject_count = int(r.hget(key, "reject_count") or "0")
+                retry_count = int(r.hget(key, "retry_count") or "0")
+                heartbeat_missed = int(r.hget(key, "heartbeat_missed") or "0")
+                heartbeat = float(r.hget(key, "heartbeat") or "0")
+                counters = {"reject_count": reject_count, "retry_count": retry_count, "heartbeat_missed": heartbeat_missed, "heartbeat": heartbeat}
+            result.append({"id": s.id, "mode": s.mode, "status": s.status, "profit": s.profit, "trades": s.trades, "started_at": s.started_at.isoformat(), **counters})
+        return result
 
 
 @app.get("/me/trades")

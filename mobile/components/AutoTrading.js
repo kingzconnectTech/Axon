@@ -23,6 +23,10 @@ export default function AutoTrading({ idToken }) {
   const [balance, setBalance] = useState(null);
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState("");
+  const [heartbeatLatency, setHeartbeatLatency] = useState(0);
+  const [missedCount, setMissedCount] = useState(0);
+  const [rejectCount, setRejectCount] = useState(0);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     if (!idToken) return;
@@ -56,6 +60,13 @@ export default function AutoTrading({ idToken }) {
           } else if (msg.type === "error") {
             setErrorCode(msg.error_code || "");
             setError(msg.message || "error");
+          } else if (msg.type === "heartbeat") {
+            setHeartbeatLatency(msg.latency ?? 0);
+          } else if (msg.type === "heartbeat_warning") {
+            setMissedCount(msg.missed ?? 0);
+          } else if (msg.type === "counter") {
+            if (typeof msg.reject_count === "number") setRejectCount(msg.reject_count);
+            if (typeof msg.retry_count === "number") setRetryCount(msg.retry_count);
           }
         } catch (e) {}
       };
@@ -145,6 +156,10 @@ export default function AutoTrading({ idToken }) {
       </TouchableOpacity>
       <Text>{balance !== null ? `Balance ${balance}` : ""}</Text>
       <Text style={{ color: "red" }}>{errorCode ? `Code ${errorCode}` : ""}</Text>
+      <Text>Heartbeat latency {heartbeatLatency.toFixed(2)}s</Text>
+      <Text>Heartbeat missed {missedCount}</Text>
+      <Text>Rejects {rejectCount}</Text>
+      <Text>Retries {retryCount}</Text>
       <TouchableOpacity
         disabled={!connected}
         onPress={() => {

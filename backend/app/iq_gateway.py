@@ -48,7 +48,10 @@ def balance(authorization: Optional[str] = Header(None)):
     if UPSTREAM:
         resp = _req("GET", "/balance", headers={"Authorization": authorization})
         if resp is None or resp.status_code != 200:
-            return {"error_code": "UPSTREAM_BALANCE_FAILED", "message": "balance failed"}
+            code = "UPSTREAM_BALANCE_FAILED"
+            if resp is not None and resp.status_code == 429:
+                code = "RATE_LIMIT"
+            return {"error_code": code, "message": "balance failed"}
         return resp.json()
     return {"balance": 1000.0}
 
@@ -65,7 +68,15 @@ def order(payload: OrderRequest, authorization: Optional[str] = Header(None)):
     if UPSTREAM:
         resp = _req("POST", "/order", headers={"Authorization": authorization}, json=payload.model_dump())
         if resp is None or resp.status_code != 200:
-            return {"error_code": "UPSTREAM_ORDER_FAILED", "message": "order failed"}
+            code = "UPSTREAM_ORDER_FAILED"
+            if resp is not None:
+                if resp.status_code == 429:
+                    code = "RATE_LIMIT"
+                elif resp.status_code == 409:
+                    code = "INSTRUMENT_CLOSED"
+                elif resp.status_code == 423:
+                    code = "MARKET_CLOSED"
+            return {"error_code": code, "message": "order failed"}
         return resp.json()
     return {"order_id": f"ord-{int(time.time())}"}
 
@@ -75,6 +86,14 @@ def position(order_id: str, authorization: Optional[str] = Header(None)):
     if UPSTREAM:
         resp = _req("GET", f"/position/{order_id}", headers={"Authorization": authorization})
         if resp is None or resp.status_code != 200:
-            return {"error_code": "UPSTREAM_POSITION_FAILED", "message": "position failed"}
+            code = "UPSTREAM_POSITION_FAILED"
+            if resp is not None:
+                if resp.status_code == 429:
+                    code = "RATE_LIMIT"
+                elif resp.status_code == 409:
+                    code = "INSTRUMENT_CLOSED"
+                elif resp.status_code == 423:
+                    code = "MARKET_CLOSED"
+            return {"error_code": code, "message": "position failed"}
         return resp.json()
     return {"order_id": order_id, "status": "closed", "result": "win", "pnl": 0.0}

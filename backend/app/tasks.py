@@ -64,9 +64,17 @@ def place_trade(uid: str, session_id: str, pair: str, direction: str, amount: fl
                 r.hset(f"session:{uid}:{session_id}", "status", "halted")
                 r.publish(f"metrics:{uid}", json.dumps({"type": "halt", "reason": "auth_error", "session_id": session_id}))
             else:
+                r.hincrby(f"session:{uid}:{session_id}", "reject_count", 1)
+                cnt = int(r.hget(f"session:{uid}:{session_id}", "reject_count") or "0")
+                r.publish(f"metrics:{uid}", json.dumps({"type": "counter", "session_id": session_id, "reject_count": cnt}))
                 r.publish(f"metrics:{uid}", json.dumps({"type": "error", "error_code": code, "message": msg, "session_id": session_id}))
             return
     order_id = client.place_order(pair, direction, amount, expiry_seconds)
+    retries = client.last_retries()
+    if retries:
+        r.hincrby(f"session:{uid}:{session_id}", "retry_count", retries)
+        cnt = int(r.hget(f"session:{uid}:{session_id}", "retry_count") or "0")
+        r.publish(f"metrics:{uid}", json.dumps({"type": "counter", "session_id": session_id, "retry_count": cnt}))
     with SessionLocal() as db:
         db.add(DbTrade(user_id=uid, session_id=session_id, pair=pair, direction=direction, amount=amount, expiry=expiry_seconds, order_id=order_id, status="placed", result="pending", pnl=0.0))
         db.commit()
@@ -74,6 +82,9 @@ def place_trade(uid: str, session_id: str, pair: str, direction: str, amount: fl
     if client.error_code():
         code = client.error_code()
         msg = client.error_message()
+        r.hincrby(f"session:{uid}:{session_id}", "reject_count", 1)
+        cnt = int(r.hget(f"session:{uid}:{session_id}", "reject_count") or "0")
+        r.publish(f"metrics:{uid}", json.dumps({"type": "counter", "session_id": session_id, "reject_count": cnt}))
         r.publish(f"metrics:{uid}", json.dumps({"type": "error", "error_code": code, "message": msg, "session_id": session_id}))
     won = result.get("result") == "win"
     pnl = result.get("pnl", 0.0)

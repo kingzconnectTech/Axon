@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, FlatList } from "react-native";
+import { View, Text, FlatList, TouchableOpacity } from "react-native";
+import { signOut } from "../firebase";
 
 export default function Profile({ uid, idToken }) {
   const [sessions, setSessions] = useState([]);
@@ -18,6 +19,14 @@ export default function Profile({ uid, idToken }) {
   return (
     <View style={{ padding: 16 }}>
       <Text>User {uid}</Text>
+      <TouchableOpacity
+        onPress={async () => {
+          await signOut();
+        }}
+        style={{ marginVertical: 8 }}
+      >
+        <Text>Sign Out</Text>
+      </TouchableOpacity>
       <Text>Sessions</Text>
       <FlatList
         data={sessions}

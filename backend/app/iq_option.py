@@ -101,6 +101,7 @@ class IQOptionClient:
                     time.sleep(backoff * (2 ** attempt))
                     attempt += 1
                     continue
+                self._last_retries = attempt
                 return resp
             except Exception:
                 if attempt >= retries:
@@ -114,6 +115,13 @@ class IQOptionClient:
         code = str(self._last_error.get("error_code", "")).upper()
         if code.startswith("UPSTREAM_LOGIN") or code.startswith("LOGIN"):
             return True
+        return False
+
+    def last_retries(self) -> int:
+        try:
+            return int(getattr(self, "_last_retries", 0))
+        except Exception:
+            return 0
         return False
 
     def error_code(self) -> Optional[str]:
