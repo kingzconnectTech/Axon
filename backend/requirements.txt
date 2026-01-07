@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+celery
+redis
+pydantic
+sqlalchemy
+psycopg2-binary
+python-dotenv
+firebase-admin
