@@ -9,6 +9,7 @@ export default function AutoTrading({ idToken }) {
   const [timeframe, setTimeframe] = useState("");
   const [pairs, setPairs] = useState("");
   const [strategy, setStrategy] = useState("");
+  const otcString = "EUR/USD OTC,GBP/USD OTC,USD/JPY OTC,EUR/JPY OTC,GBP/JPY OTC,AUD/USD OTC,EUR/GBP OTC,USD/CAD OTC";
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
   const [maxLosses, setMaxLosses] = useState("");
@@ -27,6 +28,14 @@ export default function AutoTrading({ idToken }) {
   const [missedCount, setMissedCount] = useState(0);
   const [rejectCount, setRejectCount] = useState(0);
   const [retryCount, setRetryCount] = useState(0);
+  const adviceForCode = (code) => {
+    if (!code) return "";
+    const c = String(code).toUpperCase();
+    if (c === "RATE_LIMIT") return "Rate limit hit. Wait and retry or reduce requests.";
+    if (c === "INSTRUMENT_CLOSED") return "Instrument closed. Choose a different pair.";
+    if (c === "MARKET_CLOSED") return "Market closed. Check schedule and retry when open.";
+    return "";
+  };
 
   useEffect(() => {
     if (!idToken) return;
@@ -129,6 +138,9 @@ export default function AutoTrading({ idToken }) {
       <TextInput value={timeframe} onChangeText={setTimeframe} placeholder="5min" style={{ borderWidth: 1, marginBottom: 8 }} />
       <Text>Pairs</Text>
       <TextInput value={pairs} onChangeText={setPairs} placeholder="OTC pairs" style={{ borderWidth: 1, marginBottom: 8 }} />
+      <TouchableOpacity onPress={() => setPairs(otcString)} style={{ marginBottom: 8 }}>
+        <Text>Use OTC Pairs</Text>
+      </TouchableOpacity>
       <Text>Strategy</Text>
       <TextInput value={strategy} onChangeText={setStrategy} placeholder="EMA" style={{ borderWidth: 1, marginBottom: 8 }} />
       <Text>Stop Loss</Text>
@@ -160,6 +172,11 @@ export default function AutoTrading({ idToken }) {
       <Text>Heartbeat missed {missedCount}</Text>
       <Text>Rejects {rejectCount}</Text>
       <Text>Retries {retryCount}</Text>
+      {!!adviceForCode(errorCode) && (
+        <View style={{ backgroundColor: "#ffecec", padding: 8, marginTop: 8 }}>
+          <Text>{adviceForCode(errorCode)}</Text>
+        </View>
+      )}
       <TouchableOpacity
         disabled={!connected}
         onPress={() => {

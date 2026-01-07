@@ -16,6 +16,7 @@ from .iq_option import IQOptionClient
 from .workers import spawn_user_worker, stop_user_worker
 from .workers import spawn_beat
 from .iq_gateway import router as iqgw_router
+from .pairs import OTC_PAIRS
 
 app = FastAPI()
 
@@ -76,7 +77,8 @@ def signal_start(payload: SignalStartRequest, authorization: Optional[str] = Hea
     r.hset(key, mapping={"mode": "signal", "status": "running", "strategy_id": payload.strategy_id, "timeframe": payload.timeframe})
     r.expire(key, 86400)
     r.publish(f"signals:{uid}", json.dumps({"type": "session_started", "session_id": session_id}))
-    start_user_session(uid, session_id, {"pairs": payload.pairs, "strategy_id": payload.strategy_id, "timeframe": payload.timeframe})
+    pairs = payload.pairs or OTC_PAIRS
+    start_user_session(uid, session_id, {"pairs": pairs, "strategy_id": payload.strategy_id, "timeframe": payload.timeframe})
     with SessionLocal() as db:
         db.add(DbSession(id=session_id, user_id=uid, mode="signal", status="running"))
         db.commit()
@@ -127,7 +129,8 @@ def session_start(config: AutoTradingConfig, authorization: Optional[str] = Head
     task_arn = spawn_user_worker(uid, session_id)
     if task_arn:
         r.hset(key, "worker_arn", task_arn)
-    start_user_session(uid, session_id, {"pairs": config.pairs, "strategy_id": config.strategy_id, "timeframe": config.timeframe, "amount": config.trade_amount})
+    pairs = config.pairs or OTC_PAIRS
+    start_user_session(uid, session_id, {"pairs": pairs, "strategy_id": config.strategy_id, "timeframe": config.timeframe, "amount": config.trade_amount})
     from .tasks import heartbeat_pulse
     heartbeat_pulse.apply_async(args=[uid, session_id, 10], queue=f"user:{uid}:{session_id}")
     with SessionLocal() as db:
@@ -247,6 +250,11 @@ def iq_balance(authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=400, detail="failed to connect")
         bal = client.get_balance()
         return {"balance": bal}
+
+
+@app.get("/pairs")
+def list_pairs():
+    return {"pairs": OTC_PAIRS}
 
 
 def _monitor_sessions():

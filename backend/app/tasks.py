@@ -8,6 +8,7 @@ from .session import update_metrics
 from .iq_option import IQOptionClient
 from .models import SessionLocal, Trade as DbTrade, IQCredential as DbCred
 from .credentials import decrypt
+from .pairs import OTC_PAIRS
 
 redis_host = os.getenv("REDIS_HOST", "redis")
 redis_port = int(os.getenv("REDIS_PORT", "6379"))
@@ -15,7 +16,7 @@ r = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
 
 @celery.task(name="axon.analyze_market")
 def analyze_market(uid: str, session_id: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    pairs = config.get("pairs", [])
+    pairs = config.get("pairs") or OTC_PAIRS
     for i in range(5):
         for p in pairs:
             status = r.hget(f"session:{uid}:{session_id}", "status")

@@ -11,8 +11,13 @@
   },
   "dependencies": {
     "expo": "^50.0.0",
+    "firebase": "^10.7.0",
     "react": "^18.2.0",
-    "react-native": "0.73.4",
-    "firebase": "^10.7.0"
+    "react-native": "0.73.4"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-native": "^0.72.8",
+    "typescript": "^5.9.3"
   }
 }
