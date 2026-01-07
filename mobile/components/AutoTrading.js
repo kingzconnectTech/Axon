@@ -31,9 +31,12 @@ export default function AutoTrading({ idToken }) {
   const adviceForCode = (code) => {
     if (!code) return "";
     const c = String(code).toUpperCase();
-    if (c === "RATE_LIMIT") return "Rate limit hit. Wait and retry or reduce requests.";
-    if (c === "INSTRUMENT_CLOSED") return "Instrument closed. Choose a different pair.";
+    if (c === "RATE_LIMIT" || c.includes("RATE_LIMIT")) return "Rate limit hit. Wait and retry or reduce requests.";
+    if (c === "INSTRUMENT_CLOSED" || c.includes("INSTRUMENT_CLOSED")) return "Instrument closed. Choose a different pair.";
     if (c === "MARKET_CLOSED") return "Market closed. Check schedule and retry when open.";
+    if (c.includes("INSUFFICIENT_FUNDS")) return "Insufficient funds. Top up your account.";
+    if (c.includes("TRADE_EXPIRED")) return "Trade expired. Try placing a new trade.";
+    if (c.includes("LOGIN_FAILED") || c.includes("AUTH_FAILED")) return "Authentication failed. Check credentials.";
     return "";
   };
 

@@ -12,7 +12,7 @@ export default function App() {
   const [idToken, setIdToken] = useState(null);
 
   useEffect(() => {
-    const unsub = watchAuth(async (user) => {
+    const unsub = watchAuth(async (user: any) => {
       if (user) {
         const token = await user.getIdToken();
         setIdToken(token);
@@ -47,7 +47,7 @@ export default function App() {
       <View style={{ flex: 1 }}>
         {!uid ? (
           <Login
-            onLoggedIn={async (user) => {
+            onLoggedIn={async (user: any) => {
               const token = await user.getIdToken();
               setIdToken(token);
               setUid(user.uid);
