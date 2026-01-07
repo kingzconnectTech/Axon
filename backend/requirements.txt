@@ -7,3 +7,6 @@ sqlalchemy
 psycopg2-binary
 python-dotenv
 firebase-admin
+alembic
+boto3
+requests
