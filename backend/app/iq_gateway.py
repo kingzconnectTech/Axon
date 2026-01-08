@@ -31,16 +31,18 @@ def _req(method: str, path: str, headers: Optional[Dict[str, str]] = None, json:
 class LoginRequest(BaseModel):
     username: str
     password: str
+    account_type: str = "PRACTICE"
 
 
 @router.post("/login")
 def login(payload: LoginRequest):
     if UPSTREAM:
-        resp = _req("POST", "/login", json={"username": payload.username, "password": payload.password})
+        resp = _req("POST", "/login", json={"username": payload.username, "password": payload.password, "account_type": payload.account_type})
         if resp is None or resp.status_code != 200:
             return {"error_code": "UPSTREAM_LOGIN_FAILED", "message": "login failed"}
         return resp.json()
-    return {"token": f"local-{int(time.time())}"}
+    token = f"local-{payload.account_type}-{int(time.time())}"
+    return {"token": token, "account_type": payload.account_type}
 
 
 @router.get("/balance")
@@ -53,6 +55,14 @@ def balance(authorization: Optional[str] = Header(None)):
                 code = "RATE_LIMIT"
             return {"error_code": code, "message": "balance failed"}
         return resp.json()
+    
+    # Mock behavior based on token
+    token = authorization.replace("Bearer ", "") if authorization else ""
+    if "REAL" in token:
+        return {"balance": 0.0}  # Mock REAL balance
+    elif "PRACTICE" in token:
+        return {"balance": 10000.0}  # Mock PRACTICE balance
+        
     return {"balance": 1000.0}
 
 

@@ -32,18 +32,7 @@ export default function App() {
     return () => unsub && unsub();
   }, []);
   return (
-    <SafeAreaView style={{ flex: 1 }}>
-      <View style={{ flexDirection: "row", justifyContent: "space-around", padding: 16 }}>
-        <TouchableOpacity onPress={() => setTab("signal")}>
-          <Text>Signal</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => setTab("auto")}>
-          <Text>Auto</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => setTab("profile")}>
-          <Text>Profile</Text>
-        </TouchableOpacity>
-      </View>
+    <SafeAreaView style={{ flex: 1, backgroundColor: "#F2F2F7" }}>
       <View style={{ flex: 1 }}>
         {!uid ? (
           <Login
@@ -61,6 +50,28 @@ export default function App() {
           </>
         )}
       </View>
+      {uid && (
+        <View style={{ flexDirection: "row", backgroundColor: "#fff", borderTopWidth: 1, borderTopColor: "#ddd", paddingBottom: 20, paddingTop: 10 }}>
+          <TouchableOpacity 
+            onPress={() => setTab("signal")} 
+            style={{ flex: 1, alignItems: "center", opacity: tab === "signal" ? 1 : 0.5 }}
+          >
+            <Text style={{ color: "#007AFF", fontWeight: "600" }}>Signals</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            onPress={() => setTab("auto")} 
+            style={{ flex: 1, alignItems: "center", opacity: tab === "auto" ? 1 : 0.5 }}
+          >
+            <Text style={{ color: "#007AFF", fontWeight: "600" }}>Auto Trade</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            onPress={() => setTab("profile")} 
+            style={{ flex: 1, alignItems: "center", opacity: tab === "profile" ? 1 : 0.5 }}
+          >
+            <Text style={{ color: "#007AFF", fontWeight: "600" }}>Profile</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </SafeAreaView>
   );
 }

@@ -1,9 +1,15 @@
 import os
 import uuid
 import json
+import time
 import threading
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import firebase_admin
 from firebase_admin import auth, credentials
@@ -17,8 +23,17 @@ from .workers import spawn_user_worker, stop_user_worker
 from .workers import spawn_beat
 from .iq_gateway import router as iqgw_router
 from .pairs import OTC_PAIRS
+from .strategies import get_all_strategy_names
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 try:
     firebase_admin.get_app()
@@ -126,6 +141,7 @@ def session_start(config: AutoTradingConfig, authorization: Optional[str] = Head
     )
     r.expire(key, 86400)
     r.publish(f"metrics:{uid}", json.dumps({"type": "session_started", "session_id": session_id}))
+    r.publish(f"logs:{uid}", json.dumps({"type": "log", "message": "Session started", "timestamp": time.time()}))
     task_arn = spawn_user_worker(uid, session_id)
     if task_arn:
         r.hset(key, "worker_arn", task_arn)
@@ -171,23 +187,28 @@ async def ws_stream(websocket: WebSocket):
         await websocket.close(code=4401)
         return
     await websocket.accept()
+    # print(f"[WS] Accepted connection for {uid}")
     pubsub = r.pubsub()
-    pubsub.subscribe(f"signals:{uid}", f"metrics:{uid}")
+    pubsub.subscribe(f"signals:{uid}", f"metrics:{uid}", f"logs:{uid}")
+    # print(f"[WS] Subscribed to signals:{uid}, metrics:{uid}, logs:{uid}")
 
     stop_flag = {"stop": False}
+    import asyncio
+    loop = asyncio.get_running_loop()
 
     def reader():
+        # print(f"[WS] Reader thread started for {uid}")
         for message in pubsub.listen():
             if stop_flag["stop"]:
                 break
             if message and message["type"] == "message":
                 data = message["data"]
                 try:
+                    # print(f"[WS] Received redis msg: {data}")
                     text = str(data)
-                    import anyio
-                    anyio.from_thread.run(websocket.send_text, text)
-                except Exception:
-                    pass
+                    asyncio.run_coroutine_threadsafe(websocket.send_text(text), loop)
+                except Exception as e:
+                    print(f"[WS] Error sending message: {e}")
 
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()
@@ -246,7 +267,8 @@ def iq_balance(authorization: Optional[str] = Header(None)):
         if not cred:
             raise HTTPException(status_code=400, detail="not connected")
         client = IQOptionClient()
-        if not client.connect(cred.username, decrypt(cred.password_enc)):
+        account_type = getattr(cred, "account_type", "PRACTICE")
+        if not client.connect(cred.username, decrypt(cred.password_enc), account_type, uid=uid):
             raise HTTPException(status_code=400, detail="failed to connect")
         bal = client.get_balance()
         return {"balance": bal}
@@ -255,6 +277,12 @@ def iq_balance(authorization: Optional[str] = Header(None)):
 @app.get("/pairs")
 def list_pairs():
     return {"pairs": OTC_PAIRS}
+
+
+@app.get("/strategies")
+def list_strategies():
+    # Return a list of available strategy names
+    return {"strategies": get_all_strategy_names()}
 
 
 def _monitor_sessions():
@@ -266,7 +294,7 @@ def _monitor_sessions():
                 if status != "running":
                     continue
                 hb = float(r.hget(key, "heartbeat") or "0")
-                if hb and time.time() - hb > 60:
+                if hb and time.time() - hb > 300:
                     r.hset(key, "status", "halted")
                     parts = key.split(":")
                     uid = parts[1] if len(parts) > 1 else ""
@@ -283,23 +311,27 @@ def _monitor_sessions():
 class IQConnectRequest(BaseModel):
     username: str
     password: str
+    account_type: str = "PRACTICE"
 
 
 @app.post("/iq/connect")
 def iq_connect(payload: IQConnectRequest, authorization: Optional[str] = Header(None)):
     uid = _verify_id_token(authorization)
     client = IQOptionClient()
-    ok = client.connect(payload.username, payload.password)
+    ok = client.connect(payload.username, payload.password, payload.account_type, uid=uid)
     if not ok:
-        raise HTTPException(status_code=400, detail="failed to connect")
+        detail = client.error_message() or "failed to connect"
+        code = client.error_code()
+        raise HTTPException(status_code=400, detail=f"{detail} (code: {code})")
     with SessionLocal() as db:
         enc = encrypt(payload.password)
         existing = db.get(DbCred, uid)
         if existing:
             existing.username = payload.username
             existing.password_enc = enc
+            existing.account_type = payload.account_type
         else:
-            db.add(DbCred(user_id=uid, username=payload.username, password_enc=enc))
+            db.add(DbCred(user_id=uid, username=payload.username, password_enc=enc, account_type=payload.account_type))
         db.commit()
     return {"status": "connected"}
 
@@ -320,5 +352,10 @@ def iq_disconnect(authorization: Optional[str] = Header(None)):
         if existing:
             db.delete(existing)
             db.commit()
+    
+    # Stop the agent
+    client = IQOptionClient()
+    client.disconnect(uid=uid)
+    
     return {"status": "disconnected"}
 

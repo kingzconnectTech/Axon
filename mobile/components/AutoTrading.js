@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, TextInput, TouchableOpacity } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, Modal, FlatList } from "react-native";
+import { API_URL, WS_URL } from "../config";
 
 export default function AutoTrading({ idToken }) {
   const [connected, setConnected] = useState(false);
   const [iqUser, setIqUser] = useState("");
   const [iqPass, setIqPass] = useState("");
+  const [accountType, setAccountType] = useState("PRACTICE");
   const [amount, setAmount] = useState("");
   const [timeframe, setTimeframe] = useState("");
   const [pairs, setPairs] = useState("");
   const [strategy, setStrategy] = useState("");
-  const otcString = "EUR/USD OTC,GBP/USD OTC,USD/JPY OTC,EUR/JPY OTC,GBP/JPY OTC,AUD/USD OTC,EUR/GBP OTC,USD/CAD OTC";
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
   const [maxLosses, setMaxLosses] = useState("");
@@ -28,6 +29,15 @@ export default function AutoTrading({ idToken }) {
   const [missedCount, setMissedCount] = useState(0);
   const [rejectCount, setRejectCount] = useState(0);
   const [retryCount, setRetryCount] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [logs, setLogs] = useState([]);
+
+  // Selector state
+  const [availablePairs, setAvailablePairs] = useState([]);
+  const [availableStrategies, setAvailableStrategies] = useState([]);
+  const [showPairSelector, setShowPairSelector] = useState(false);
+  const [showStrategySelector, setShowStrategySelector] = useState(false);
+
   const adviceForCode = (code) => {
     if (!code) return "";
     const c = String(code).toUpperCase();
@@ -41,8 +51,30 @@ export default function AutoTrading({ idToken }) {
   };
 
   useEffect(() => {
+    // Fetch options
+    fetch(`${API_URL}/pairs`).then(r=>r.json()).then(d=>setAvailablePairs(d.pairs || [])).catch(e=>console.log(e));
+    fetch(`${API_URL}/strategies`).then(r=>r.json()).then(d=>setAvailableStrategies(d.strategies || [])).catch(e=>console.log(e));
+
     if (!idToken) return;
-    fetch("http://localhost:8000/iq/status", { headers: { Authorization: `Bearer ${idToken}` } })
+    
+    // Check for active session
+    fetch(`${API_URL}/me/sessions?limit=1`, { headers: { Authorization: `Bearer ${idToken}` } })
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.length > 0) {
+          const lastSession = data[0];
+          if (lastSession.status === "running" && lastSession.mode === "auto") {
+            setSessionId(lastSession.id);
+            setPnl(lastSession.profit || 0);
+            setTrades(lastSession.trades || 0);
+            setHaltReason("");
+            console.log("Restored session:", lastSession.id);
+          }
+        }
+      })
+      .catch(e => console.log("Failed to fetch sessions", e));
+
+    fetch(`${API_URL}/iq/status`, { headers: { Authorization: `Bearer ${idToken}` } })
       .then(res => res.json())
       .then(data => {
         setConnected(!!data.connected);
@@ -53,7 +85,7 @@ export default function AutoTrading({ idToken }) {
     let closed = false;
     const connectWs = () => {
       if (closed) return;
-      const socket = new WebSocket(`ws://localhost:8000/ws/stream?token=${idToken}`);
+      const socket = new WebSocket(`${WS_URL}/ws/stream?token=${idToken}`);
       socket.onopen = () => {
         attempt = 0;
         setError("");
@@ -79,10 +111,12 @@ export default function AutoTrading({ idToken }) {
           } else if (msg.type === "counter") {
             if (typeof msg.reject_count === "number") setRejectCount(msg.reject_count);
             if (typeof msg.retry_count === "number") setRetryCount(msg.retry_count);
+          } else if (msg.type === "log") {
+            setLogs(prev => [`[${new Date(msg.timestamp * 1000).toLocaleTimeString()}] ${msg.message}`, ...prev]);
           }
         } catch (e) {}
       };
-      socket.onerror = () => setError("WebSocket error");
+      socket.onerror = () => {};
       socket.onclose = () => {
         attempt += 1;
         const delay = Math.min(5000, 500 * Math.pow(2, attempt));
@@ -98,159 +132,663 @@ export default function AutoTrading({ idToken }) {
   }, [idToken]);
 
   return (
-    <View style={{ padding: 16 }}>
-      <Text>Status {connected ? "Connected" : "Disconnected"}</Text>
-      <View style={{ flexDirection: "row", margin_vertical: 8 }}>
-        <TextInput value={iqUser} onChangeText={setIqUser} placeholder="IQ username" style={{ borderWidth: 1, marginRight: 8, flex: 1 }} />
-        <TextInput value={iqPass} onChangeText={setIqPass} placeholder="IQ password" secureTextEntry style={{ borderWidth: 1, marginRight: 8, flex: 1 }} />
-        <TouchableOpacity
-          onPress={() => {
-            fetch("http://localhost:8000/iq/connect", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-              body: JSON.stringify({ username: iqUser, password: iqPass })
-            })
-              .then(async (res) => {
-                if (!res.ok) throw new Error("connect failed");
-                await res.json();
-                setConnected(true);
-                setError("");
-              })
-              .catch(() => setError("Connect failed"));
-          }}
-          style={{ marginRight: 12 }}
-        >
-          <Text>Connect</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => {
-            fetch("http://localhost:8000/iq/disconnect", { method: "DELETE", headers: { Authorization: `Bearer ${idToken}` } })
-              .then(() => {
-                setConnected(false);
-                setError("");
-              })
-              .catch(() => setError("Disconnect failed"));
-          }}
-        >
-          <Text>Disconnect</Text>
-        </TouchableOpacity>
-      </View>
-      <Text>Amount</Text>
-      <TextInput value={amount} onChangeText={setAmount} placeholder="10" style={{ borderWidth: 1, marginBottom: 8 }} />
-      <Text>Timeframe</Text>
-      <TextInput value={timeframe} onChangeText={setTimeframe} placeholder="5min" style={{ borderWidth: 1, marginBottom: 8 }} />
-      <Text>Pairs</Text>
-      <TextInput value={pairs} onChangeText={setPairs} placeholder="OTC pairs" style={{ borderWidth: 1, marginBottom: 8 }} />
-      <TouchableOpacity onPress={() => setPairs(otcString)} style={{ marginBottom: 8 }}>
-        <Text>Use OTC Pairs</Text>
-      </TouchableOpacity>
-      <Text>Strategy</Text>
-      <TextInput value={strategy} onChangeText={setStrategy} placeholder="EMA" style={{ borderWidth: 1, marginBottom: 8 }} />
-      <Text>Stop Loss</Text>
-      <TextInput value={stopLoss} onChangeText={setStopLoss} placeholder="100" style={{ borderWidth: 1, marginBottom: 8 }} />
-      <Text>Take Profit</Text>
-      <TextInput value={takeProfit} onChangeText={setTakeProfit} placeholder="50" style={{ borderWidth: 1, marginBottom: 8 }} />
-      <Text>Max Consecutive Losses</Text>
-      <TextInput value={maxLosses} onChangeText={setMaxLosses} placeholder="3" style={{ borderWidth: 1, marginBottom: 8 }} />
-      <Text>Max Trades</Text>
-      <TextInput value={maxTrades} onChangeText={setMaxTrades} placeholder="20" style={{ borderWidth: 1, marginBottom: 8 }} />
-      <TouchableOpacity
-        onPress={() => {
-          fetch("http://localhost:8000/iq/balance", { headers: { Authorization: `Bearer ${idToken}` } })
-            .then(async (res) => {
-              if (!res.ok) throw new Error("balance failed");
-              const data = await res.json();
-              setBalance(data.balance);
-              setError("");
-            })
-            .catch(() => setError("Balance fetch failed"));
-        }}
-        style={{ marginBottom: 8 }}
-      >
-        <Text>Fetch Balance</Text>
-      </TouchableOpacity>
-      <Text>{balance !== null ? `Balance ${balance}` : ""}</Text>
-      <Text style={{ color: "red" }}>{errorCode ? `Code ${errorCode}` : ""}</Text>
-      <Text>Heartbeat latency {heartbeatLatency.toFixed(2)}s</Text>
-      <Text>Heartbeat missed {missedCount}</Text>
-      <Text>Rejects {rejectCount}</Text>
-      <Text>Retries {retryCount}</Text>
-      {!!adviceForCode(errorCode) && (
-        <View style={{ backgroundColor: "#ffecec", padding: 8, marginTop: 8 }}>
-          <Text>{adviceForCode(errorCode)}</Text>
+    <ScrollView contentContainerStyle={styles.container}>
+      {/* Dashboard Section */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Live Dashboard</Text>
+        <View style={styles.statsGrid}>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>P&L</Text>
+            <Text style={[styles.statValue, { color: pnl >= 0 ? "#34C759" : "#FF3B30" }]}>
+              ${pnl.toFixed(2)}
+            </Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>Trades</Text>
+            <Text style={styles.statValue}>{trades}</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>Wins</Text>
+            <Text style={styles.statValue}>{wins}</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statLabel}>Loss Streak</Text>
+            <Text style={styles.statValue}>{lossStreak}</Text>
+          </View>
         </View>
-      )}
-      <TouchableOpacity
-        disabled={!connected}
-        onPress={() => {
-          fetch("http://localhost:8000/session/start", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-            body: JSON.stringify({
-              trade_amount: Number(amount || 10),
-              timeframe: timeframe || "5min",
-              pairs: pairs ? pairs.split(",").map(s => s.trim()) : ["EUR/USD"],
-              strategy_id: strategy || "ema",
-              stop_loss: Number(stopLoss || 100),
-              take_profit: Number(takeProfit || 50),
-              max_consecutive_losses: Number(maxLosses || 3),
-              max_trades: Number(maxTrades || 20)
-            })
-          })
-            .then(res => res.json())
-            .then(data => {
-              setSessionId(data.session_id);
-              setError("");
-            })
-            .catch(() => setError("Start failed"));
-        }}
-      >
-        <Text>Start Auto-Trading</Text>
-      </TouchableOpacity>
-      <View style={{ marginTop: 16 }}>
-        <Text>Session P&L {pnl}</Text>
-        <Text>Trades {trades}</Text>
-        <Text>Wins {wins}</Text>
-        <Text>Consecutive losses {lossStreak}</Text>
-        <Text>{haltReason ? `Halt ${haltReason}` : ""}</Text>
-        <Text style={{ color: "red" }}>{error}</Text>
-        {(!connected && errorCode && errorCode.toLowerCase().includes("login")) && (
-          <TouchableOpacity
-            onPress={() => {
-              fetch("http://localhost:8000/iq/connect", {
-                method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-                body: JSON.stringify({ username: iqUser, password: iqPass })
-              })
-                .then(async (res) => {
-                  if (!res.ok) throw new Error("connect failed");
-                  await res.json();
-                  setConnected(true);
-                  setError("");
-                  setErrorCode("");
+        
+        {/* System Health */}
+        <View style={styles.healthContainer}>
+            <View style={styles.healthRow}>
+                <Text style={styles.healthText}>Latency: {heartbeatLatency.toFixed(2)}s</Text>
+                <Text style={styles.healthText}>Missed: {missedCount}</Text>
+            </View>
+            <View style={styles.healthRow}>
+                <Text style={styles.healthText}>Rejects: {rejectCount}</Text>
+                <Text style={styles.healthText}>Retries: {retryCount}</Text>
+            </View>
+        </View>
+
+        {haltReason ? (
+          <View style={styles.alertBox}>
+            <Text style={styles.alertText}>HALTED: {haltReason}</Text>
+          </View>
+        ) : null}
+        
+        {error ? (
+           <View style={styles.errorBox}>
+             <Text style={styles.errorText}>{error}</Text>
+             {errorCode ? <Text style={styles.errorCode}>Code: {errorCode}</Text> : null}
+             {!!adviceForCode(errorCode) && (
+                <Text style={styles.adviceText}>{adviceForCode(errorCode)}</Text>
+             )}
+           </View>
+        ) : null}
+      </View>
+
+      {/* Connection Section */}
+      <View style={styles.card}>
+        <View style={styles.headerRow}>
+            <Text style={styles.cardTitle}>IQ Option Connection</Text>
+            <View style={[styles.statusBadge, { backgroundColor: connected ? "#34C759" : "#FF3B30" }]}>
+                <Text style={styles.statusText}>{connected ? "Connected" : "Disconnected"}</Text>
+            </View>
+        </View>
+        
+        <View style={styles.inputGroup}>
+            <Text style={styles.label}>Email</Text>
+            <TextInput 
+                value={iqUser} 
+                onChangeText={setIqUser} 
+                placeholder="email@example.com" 
+                style={styles.input} 
+                autoCapitalize="none"
+            />
+        </View>
+        <View style={styles.inputGroup}>
+            <Text style={styles.label}>Password</Text>
+            <TextInput 
+                value={iqPass} 
+                onChangeText={setIqPass} 
+                placeholder="••••••••" 
+                secureTextEntry 
+                style={styles.input} 
+            />
+        </View>
+
+        <View style={styles.inputGroup}>
+            <Text style={styles.label}>Account Type</Text>
+            <View style={{ flexDirection: 'row', marginTop: 5 }}>
+                <TouchableOpacity 
+                    onPress={() => setAccountType("PRACTICE")}
+                    style={{
+                        flex: 1, 
+                        padding: 10, 
+                        backgroundColor: accountType === "PRACTICE" ? "#007AFF" : "#f0f0f0",
+                        borderTopLeftRadius: 8,
+                        borderBottomLeftRadius: 8,
+                        alignItems: 'center'
+                    }}
+                >
+                    <Text style={{ color: accountType === "PRACTICE" ? "#fff" : "#333", fontWeight: '600' }}>Demo</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                    onPress={() => setAccountType("REAL")}
+                    style={{
+                        flex: 1, 
+                        padding: 10, 
+                        backgroundColor: accountType === "REAL" ? "#007AFF" : "#f0f0f0",
+                        borderTopRightRadius: 8,
+                        borderBottomRightRadius: 8,
+                        alignItems: 'center'
+                    }}
+                >
+                    <Text style={{ color: accountType === "REAL" ? "#fff" : "#333", fontWeight: '600' }}>Real</Text>
+                </TouchableOpacity>
+            </View>
+        </View>
+
+        <View style={styles.buttonRow}>
+            <TouchableOpacity
+              disabled={isLoading}
+              onPress={() => {
+                console.log("Connect button pressed");
+                setIsLoading(true);
+                setError("");
+                fetch(`${API_URL}/iq/connect`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                  body: JSON.stringify({ username: iqUser, password: iqPass, account_type: accountType })
                 })
-                .catch(() => setError("Retry connect failed"));
-            }}
-            style={{ marginTop: 8 }}
-          >
-            <Text>Retry Connect</Text>
-          </TouchableOpacity>
+                  .then(async (res) => {
+                    console.log("Connect response status:", res.status);
+                    if (!res.ok) {
+                        const errText = await res.text();
+                        console.log("Connect error body:", errText);
+                        throw new Error(errText || "connect failed");
+                    }
+                    await res.json();
+                    setConnected(true);
+                    setError("");
+                  })
+                  .catch((e) => {
+                      console.log("Connect exception:", e);
+                      setError("Connect failed: " + e.message);
+                  })
+                  .finally(() => setIsLoading(false));
+              }}
+              style={[styles.button, styles.primaryButton, { flex: 1, marginRight: 8, opacity: isLoading ? 0.7 : 1 }]}
+            >
+              {isLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Connect</Text>}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => {
+                fetch(`${API_URL}/iq/disconnect`, { method: "DELETE", headers: { Authorization: `Bearer ${idToken}` } })
+                  .then(() => {
+                    setConnected(false);
+                    setError("");
+                  })
+                  .catch(() => setError("Disconnect failed"));
+              }}
+              style={[styles.button, styles.outlineButton, { flex: 1 }]}
+            >
+              <Text style={styles.outlineButtonText}>Disconnect</Text>
+            </TouchableOpacity>
+        </View>
+        
+        {(!connected && errorCode && errorCode.toLowerCase().includes("login")) && (
+             <TouchableOpacity
+             onPress={() => {
+               fetch(`${API_URL}/iq/connect`, {
+                 method: "POST",
+                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                 body: JSON.stringify({ username: iqUser, password: iqPass, account_type: accountType })
+               })
+                 .then(async (res) => {
+                   if (!res.ok) throw new Error("connect failed");
+                   await res.json();
+                   setConnected(true);
+                   setError("");
+                   setErrorCode("");
+                 })
+                 .catch(() => setError("Retry connect failed"));
+             }}
+             style={[styles.button, styles.secondaryButton, { marginTop: 10 }]}
+           >
+             <Text style={styles.buttonText}>Retry Connect</Text>
+           </TouchableOpacity>
         )}
+
+        <View style={styles.balanceRow}>
+            <TouchableOpacity
+                onPress={() => {
+                fetch(`${API_URL}/iq/balance`, { headers: { Authorization: `Bearer ${idToken}` } })
+                    .then(async (res) => {
+                    if (!res.ok) throw new Error("balance failed");
+                    const data = await res.json();
+                    setBalance(data.balance);
+                    setError("");
+                    })
+                    .catch(() => setError("Balance fetch failed"));
+                }}
+                style={styles.linkButton}
+            >
+                <Text style={styles.linkText}>Refresh Balance</Text>
+            </TouchableOpacity>
+            <Text style={styles.balanceText}>{balance !== null ? `$${balance} (${accountType})` : "---"}</Text>
+        </View>
+      </View>
+
+      {/* Trading Configuration */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Trading Configuration</Text>
+        
+        <View style={styles.row}>
+            <View style={[styles.inputGroup, { flex: 1, marginRight: 8 }]}>
+                <Text style={styles.label}>Amount ($)</Text>
+                <TextInput 
+                    value={amount} 
+                    onChangeText={setAmount} 
+                    placeholder="10" 
+                    keyboardType="numeric"
+                    style={styles.input} 
+                />
+            </View>
+            <View style={[styles.inputGroup, { flex: 1 }]}>
+                <Text style={styles.label}>Timeframe</Text>
+                <TextInput 
+                    value={timeframe} 
+                    onChangeText={setTimeframe} 
+                    placeholder="5min" 
+                    style={styles.input} 
+                />
+            </View>
+        </View>
+
+        <View style={styles.inputGroup}>
+            <Text style={styles.label}>Strategy</Text>
+            <TouchableOpacity onPress={() => setShowStrategySelector(true)} style={[styles.input, { justifyContent: 'center' }]}>
+                <Text style={{ color: strategy ? '#000' : '#aaa' }}>{strategy || "Select Strategy"}</Text>
+            </TouchableOpacity>
+        </View>
+
+        <View style={styles.inputGroup}>
+            <Text style={styles.label}>Pairs</Text>
+            <TouchableOpacity onPress={() => setShowPairSelector(true)} style={[styles.input, { justifyContent: 'center' }]}>
+                <Text style={{ color: pairs ? '#000' : '#aaa' }} numberOfLines={1}>{pairs || "Select Pairs"}</Text>
+            </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Risk Management */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Risk Management</Text>
+        
+        <View style={styles.row}>
+            <View style={[styles.inputGroup, { flex: 1, marginRight: 8 }]}>
+                <Text style={styles.label}>Stop Loss ($)</Text>
+                <TextInput 
+                    value={stopLoss} 
+                    onChangeText={setStopLoss} 
+                    placeholder="100" 
+                    keyboardType="numeric"
+                    style={styles.input} 
+                />
+            </View>
+            <View style={[styles.inputGroup, { flex: 1 }]}>
+                <Text style={styles.label}>Take Profit ($)</Text>
+                <TextInput 
+                    value={takeProfit} 
+                    onChangeText={setTakeProfit} 
+                    placeholder="50" 
+                    keyboardType="numeric"
+                    style={styles.input} 
+                />
+            </View>
+        </View>
+
+        <View style={styles.row}>
+            <View style={[styles.inputGroup, { flex: 1, marginRight: 8 }]}>
+                <Text style={styles.label}>Max Cons. Losses</Text>
+                <TextInput 
+                    value={maxLosses} 
+                    onChangeText={setMaxLosses} 
+                    placeholder="3" 
+                    keyboardType="numeric"
+                    style={styles.input} 
+                />
+            </View>
+            <View style={[styles.inputGroup, { flex: 1 }]}>
+                <Text style={styles.label}>Max Trades</Text>
+                <TextInput 
+                    value={maxTrades} 
+                    onChangeText={setMaxTrades} 
+                    placeholder="20" 
+                    keyboardType="numeric"
+                    style={styles.input} 
+                />
+            </View>
+        </View>
+      </View>
+
+      {/* Main Actions */}
+      <View style={styles.actionContainer}>
         <TouchableOpacity
-          onPress={() => {
-            if (!sessionId) return;
-            fetch("http://localhost:8000/session/stop", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-              body: JSON.stringify({ session_id: sessionId })
-            })
-              .then(() => setError(""))
-              .catch(() => setError("Stop failed"));
-          }}
+            disabled={!connected && !sessionId}
+            onPress={() => {
+                if (sessionId) {
+                    // STOP TRADING
+                    fetch(`${API_URL}/session/stop`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                        body: JSON.stringify({ session_id: sessionId })
+                    })
+                    .then(() => {
+                        setSessionId(null);
+                        setError("");
+                    })
+                    .catch(() => setError("Stop failed"));
+                } else {
+                    // START TRADING
+                    fetch(`${API_URL}/session/start`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+                        body: JSON.stringify({
+                            trade_amount: Number(amount || 10),
+                            timeframe: timeframe || "5min",
+                            pairs: pairs ? pairs.split(",").map(s => s.trim()) : ["EUR/USD"],
+                            strategy_id: strategy || "ema",
+                            stop_loss: Number(stopLoss || 100),
+                            take_profit: Number(takeProfit || 50),
+                            max_consecutive_losses: Number(maxLosses || 3),
+                            max_trades: Number(maxTrades || 20)
+                        })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        setSessionId(data.session_id);
+                        setError("");
+                        setHaltReason(""); // Clear previous halt reason
+                    })
+                    .catch(() => setError("Start failed"));
+                }
+            }}
+            style={[
+                styles.mainButton, 
+                { backgroundColor: sessionId ? "#FF3B30" : (connected ? "#007AFF" : "#A0A0A0") }
+            ]}
         >
-          <Text>Emergency Stop</Text>
+            <Text style={styles.mainButtonText}>
+                {sessionId ? "Stop Trading" : "Start Auto-Trading"}
+            </Text>
         </TouchableOpacity>
       </View>
-    </View>
+      
+      {/* Logs Section */}
+      <View style={[styles.card, { marginTop: 20 }]}>
+        <Text style={styles.cardTitle}>System Log</Text>
+        <View style={{ height: 150, backgroundColor: 'black', borderRadius: 8, padding: 10 }}>
+            <ScrollView nestedScrollEnabled={true}>
+                {logs.map((item, index) => (
+                    <Text key={index} style={{ color: '#00FF00', fontFamily: 'monospace', fontSize: 12, marginBottom: 2 }}>{item}</Text>
+                ))}
+            </ScrollView>
+        </View>
+      </View>
+
+      <View style={{ height: 40 }} />
+
+      {/* Selectors */}
+      <Modal visible={showStrategySelector} animationType="slide" transparent={true} onRequestClose={() => setShowStrategySelector(false)}>
+          <View style={{ flex: 1, justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+              <View style={{ margin: 20, backgroundColor: 'white', borderRadius: 10, padding: 20, maxHeight: '80%' }}>
+                  <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 10 }}>Select Strategy</Text>
+                  <FlatList 
+                      data={availableStrategies}
+                      keyExtractor={(item) => item}
+                      renderItem={({ item }) => (
+                          <TouchableOpacity 
+                              style={{ padding: 15, borderBottomWidth: 1, borderBottomColor: '#eee' }}
+                              onPress={() => { setStrategy(item); setShowStrategySelector(false); }}
+                          >
+                              <Text style={{fontSize: 16}}>{item}</Text>
+                          </TouchableOpacity>
+                      )}
+                  />
+                  <TouchableOpacity onPress={() => setShowStrategySelector(false)} style={{ marginTop: 15, padding: 10, alignItems: 'center', backgroundColor: '#f0f0f0', borderRadius: 8 }}>
+                      <Text style={{ color: 'red', fontWeight: 'bold' }}>Cancel</Text>
+                  </TouchableOpacity>
+              </View>
+          </View>
+      </Modal>
+
+      <Modal visible={showPairSelector} animationType="slide" transparent={true} onRequestClose={() => setShowPairSelector(false)}>
+          <View style={{ flex: 1, justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+              <View style={{ margin: 20, backgroundColor: 'white', borderRadius: 10, padding: 20, maxHeight: '80%' }}>
+                  <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 10 }}>Select Pairs</Text>
+                  <FlatList 
+                      data={availablePairs}
+                      keyExtractor={(item) => item}
+                      renderItem={({ item }) => {
+                          const selected = pairs.split(',').map(p=>p.trim()).includes(item);
+                          return (
+                              <TouchableOpacity 
+                                  style={{ padding: 15, borderBottomWidth: 1, borderBottomColor: '#eee', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}
+                                  onPress={() => { 
+                                      let current = pairs ? pairs.split(',').map(p=>p.trim()).filter(p=>p) : [];
+                                      if (selected) {
+                                          current = current.filter(p => p !== item);
+                                      } else {
+                                          current.push(item);
+                                      }
+                                      setPairs(current.join(', '));
+                                  }}
+                              >
+                                  <Text style={{fontSize: 16}}>{item}</Text>
+                                  {selected && <Text style={{ color: '#007AFF', fontWeight: 'bold', fontSize: 18 }}>✓</Text>}
+                              </TouchableOpacity>
+                          );
+                      }}
+                  />
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 15 }}>
+                       <TouchableOpacity onPress={() => setPairs(availablePairs.join(', '))} style={{ padding: 10, backgroundColor: '#f0f0f0', borderRadius: 8, flex: 1, marginRight: 5, alignItems: 'center' }}>
+                          <Text style={{ color: '#007AFF' }}>Select All</Text>
+                       </TouchableOpacity>
+                       <TouchableOpacity onPress={() => setPairs("")} style={{ padding: 10, backgroundColor: '#f0f0f0', borderRadius: 8, flex: 1, marginRight: 5, marginLeft: 5, alignItems: 'center' }}>
+                          <Text style={{ color: '#FF3B30' }}>Clear</Text>
+                       </TouchableOpacity>
+                       <TouchableOpacity onPress={() => setShowPairSelector(false)} style={{ padding: 10, backgroundColor: '#007AFF', borderRadius: 8, flex: 1, marginLeft: 5, alignItems: 'center' }}>
+                          <Text style={{ color: 'white', fontWeight: 'bold' }}>Done</Text>
+                       </TouchableOpacity>
+                  </View>
+              </View>
+          </View>
+      </Modal>
+
+    </ScrollView>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    padding: 16,
+    paddingBottom: 40,
+    backgroundColor: "#F2F2F7",
+  },
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    marginBottom: 16,
+    color: "#1C1C1E",
+  },
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  statusText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+  statsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: 16,
+  },
+  statItem: {
+    width: "50%",
+    padding: 8,
+    alignItems: "center",
+  },
+  statLabel: {
+    fontSize: 12,
+    color: "#8E8E93",
+    marginBottom: 4,
+  },
+  statValue: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#1C1C1E",
+  },
+  healthContainer: {
+    backgroundColor: "#F2F2F7",
+    padding: 8,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  healthRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  healthText: {
+    fontSize: 10,
+    color: "#8E8E93",
+  },
+  inputGroup: {
+    marginBottom: 12,
+  },
+  label: {
+    fontSize: 14,
+    color: "#3A3A3C",
+    marginBottom: 6,
+    fontWeight: "500",
+  },
+  input: {
+    backgroundColor: "#F2F2F7",
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    color: "#1C1C1E",
+  },
+  row: {
+    flexDirection: "row",
+  },
+  buttonRow: {
+    flexDirection: "row",
+    marginTop: 8,
+  },
+  button: {
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  primaryButton: {
+    backgroundColor: "#007AFF",
+  },
+  secondaryButton: {
+    backgroundColor: "#5856D6",
+  },
+  outlineButton: {
+    borderWidth: 1,
+    borderColor: "#007AFF",
+    backgroundColor: "transparent",
+  },
+  buttonText: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 16,
+  },
+  outlineButtonText: {
+    color: "#007AFF",
+    fontWeight: "600",
+    fontSize: 16,
+  },
+  helperLink: {
+    marginTop: 4,
+    alignSelf: "flex-end",
+  },
+  helperText: {
+    color: "#007AFF",
+    fontSize: 12,
+  },
+  balanceRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: "#E5E5EA",
+  },
+  linkButton: {
+    padding: 4,
+  },
+  linkText: {
+    color: "#007AFF",
+    fontWeight: "500",
+  },
+  balanceText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#1C1C1E",
+  },
+  actionContainer: {
+    marginTop: 8,
+  },
+  mainButton: {
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: "center",
+    marginBottom: 12,
+    shadowColor: "#007AFF",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  mainButtonText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  stopButton: {
+    paddingVertical: 16,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#FF3B30",
+    alignItems: "center",
+    backgroundColor: "#fff",
+  },
+  stopButtonText: {
+    color: "#FF3B30",
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  alertBox: {
+    backgroundColor: "#FFECEC",
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: "#FF3B30",
+  },
+  alertText: {
+    color: "#FF3B30",
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  errorBox: {
+    backgroundColor: "#FF3B30",
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 12,
+  },
+  errorText: {
+    color: "#fff",
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  errorCode: {
+    color: "rgba(255,255,255,0.8)",
+    textAlign: "center",
+    fontSize: 12,
+    marginTop: 4,
+  },
+  adviceText: {
+    color: "#fff",
+    textAlign: "center",
+    marginTop: 8,
+    fontStyle: "italic",
+  },
+});

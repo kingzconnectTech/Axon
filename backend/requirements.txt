@@ -9,3 +9,6 @@ firebase-admin
 alembic
 boto3
 requests
+iqoptionapi
+pandas
+pandas_ta

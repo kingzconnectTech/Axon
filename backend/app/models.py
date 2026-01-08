@@ -51,5 +51,6 @@ class IQCredential(Base):
     user_id = Column(String, primary_key=True)
     username = Column(String)
     password_enc = Column(String)
+    account_type = Column(String, default="PRACTICE")
     updated_at = Column(DateTime, default=datetime.utcnow)
 
