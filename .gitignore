@@ -1,0 +1,27 @@
+# Secrets
+serviceAccountKey.json
+*.env
+
+# Logs
+*.log
+backend/*.log
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.pytest_cache/
+
+# React Native
+node_modules/
+.expo/
+dist/
+web-build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

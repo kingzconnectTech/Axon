@@ -1,11 +1,13 @@
 import os
 from cryptography.fernet import Fernet
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def _key() -> bytes:
     k = os.getenv("SECRET_KEY", None)
     if not k:
-        k = Fernet.generate_key().decode()
-        os.environ["SECRET_KEY"] = k
+        raise RuntimeError("SECRET_KEY is not set")
     return k.encode()
 
 def encrypt(text: str) -> str:
@@ -15,4 +17,3 @@ def encrypt(text: str) -> str:
 def decrypt(token: str) -> str:
     f = Fernet(_key())
     return f.decrypt(token.encode()).decode()
-
