@@ -109,16 +109,29 @@ class RsiReversal(Strategy):
                 
         return None
 
-# 3. Breakout + Retest (Structure) - Simplified
+# 3. Breakout (Donchian Channel)
 class BreakoutRetest(Strategy):
     def __init__(self):
         super().__init__("Breakout Retest")
     
     def calculate_indicators(self, df):
-        df['EMA_20'] = ta.ema(df['close'], length=20)
+        # Donchian Channels (20)
+        df['high_20'] = df['max'].rolling(window=20).max()
+        df['low_20'] = df['min'].rolling(window=20).min()
         return df
 
     def check_rules(self, df, last, prev):
+        # Breakout UP: Close > Prev High 20
+        # (Using prev high to ensure it's a breakout of the *past* range)
+        prev_high = prev['high_20']
+        prev_low = prev['low_20']
+        
+        if last['close'] > prev_high:
+            return {"direction": "CALL", "confidence": 0.75}
+            
+        if last['close'] < prev_low:
+            return {"direction": "PUT", "confidence": 0.75}
+            
         return None
 
 # 4. EMA Crossover
@@ -195,12 +208,41 @@ class VolatilitySqueeze(Strategy):
         super().__init__("Volatility Squeeze")
 
     def calculate_indicators(self, df):
-        bb = ta.bbands(df['close'], length=20, std=2)
-        # kc = ta.kc(df['high'], df['low'], df['close'], length=20, scalar=1.5)
-        df = pd.concat([df, bb], axis=1)
+        # Bollinger Bands
+        bb = ta.bbands(df['close'], length=20, std=2.0)
+        # Keltner Channels
+        kc = ta.kc(df['high'], df['low'], df['close'], length=20, scalar=1.5)
+        
+        df = pd.concat([df, bb, kc], axis=1)
         return df
     
     def check_rules(self, df, last, prev):
+        # Check if Squeeze was ON in previous candle
+        # Squeeze ON = BB inside KC
+        # BB: BBL_20_2.0, BBU_20_2.0
+        # KC: KCL_20_1.5, KCU_20_1.5 (default names from pandas_ta, may vary slightly)
+        
+        # Verify columns exist
+        if 'BBU_20_2.0' not in last or 'KCU_20_1.5' not in last:
+            return None
+            
+        bb_upper = prev['BBU_20_2.0']
+        bb_lower = prev['BBL_20_2.0']
+        kc_upper = prev['KCU_20_1.5']
+        kc_lower = prev['KCL_20_1.5']
+        
+        squeeze_on = (bb_upper < kc_upper) and (bb_lower > kc_lower)
+        
+        if squeeze_on:
+            # Momentum breakout
+            # Simple check: Close crosses BB Upper (Call) or BB Lower (Put)
+            # Or just check current candle momentum relative to middle band
+            
+            if last['close'] > last['BBU_20_2.0']:
+                return {"direction": "CALL", "confidence": 0.8}
+            elif last['close'] < last['BBL_20_2.0']:
+                 return {"direction": "PUT", "confidence": 0.8}
+                 
         return None
 
 # 7. Random Strategy (For Testing)

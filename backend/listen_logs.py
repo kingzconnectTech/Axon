@@ -1,8 +1,14 @@
+import os
 import redis
 import json
 import time
 
-r = redis.Redis(host='127.0.0.1', port=6380, db=0, decode_responses=True)
+r = redis.Redis(
+    host=os.getenv("REDIS_HOST", "127.0.0.1"),
+    port=int(os.getenv("REDIS_PORT", "6379")),
+    db=0,
+    decode_responses=True,
+)
 p = r.pubsub()
 p.psubscribe('logs:*')
 

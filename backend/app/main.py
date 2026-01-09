@@ -3,6 +3,7 @@ import uuid
 import json
 import time
 import threading
+import random
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -16,6 +17,7 @@ from firebase_admin import auth, credentials
 import redis
 from .schemas import SignalStartRequest, SignalStopRequest, AutoTradingConfig, SessionStartResponse
 from .tasks import start_user_session
+from .celery_app import user_queue
 from .models import SessionLocal, Base, engine, Session as DbSession, Trade as DbTrade, IQCredential as DbCred
 from .credentials import encrypt, decrypt
 from .iq_option import IQOptionClient
@@ -51,6 +53,8 @@ r = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
 class VerifyTokenResponse(BaseModel):
     uid: str
 
+class PushTokenRequest(BaseModel):
+    token: str
 
 def _bearer_token(authorization: Optional[str]) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -77,6 +81,14 @@ def verify_token(authorization: Optional[str] = Header(None)):
     uid = _verify_id_token(authorization)
     return VerifyTokenResponse(uid=uid)
 
+
+@app.post("/auth/push-token")
+def save_push_token(payload: PushTokenRequest, authorization: Optional[str] = Header(None)):
+    uid = _verify_id_token(authorization)
+    r.set(f"user:{uid}:push_token", payload.token)
+    return {"status": "ok"}
+
+
 app.include_router(iqgw_router)
 
 
@@ -89,11 +101,31 @@ def signal_start(payload: SignalStartRequest, authorization: Optional[str] = Hea
     uid = _verify_id_token(authorization)
     session_id = uuid.uuid4().hex
     key = _session_key(uid, session_id)
-    r.hset(key, mapping={"mode": "signal", "status": "running", "strategy_id": payload.strategy_id, "timeframe": payload.timeframe})
+    r.hmset(key, {"mode": "signal", "status": "running", "strategy_id": payload.strategy_id, "timeframe": payload.timeframe})
     r.expire(key, 86400)
     r.publish(f"signals:{uid}", json.dumps({"type": "session_started", "session_id": session_id}))
+    task_arn = spawn_user_worker(uid, session_id)
+    if task_arn:
+        r.hset(key, "worker_arn", task_arn)
     pairs = payload.pairs or OTC_PAIRS
+    if payload.strategy_id == "Random Strategy":
+        pair = random.choice(pairs or OTC_PAIRS)
+        r.publish(f"logs:{uid}", json.dumps({"type": "log", "message": f"Analyzing {pair}...", "timestamp": time.time()}))
+        direction = "CALL" if random.random() > 0.5 else "PUT"
+        signal_msg = {
+            "type": "signal",
+            "session_id": session_id,
+            "pair": pair,
+            "direction": direction,
+            "confidence": 1.0,
+            "strategy": payload.strategy_id,
+            "timeframe": payload.timeframe,
+        }
+        r.publish(f"signals:{uid}", json.dumps(signal_msg))
+        r.publish(f"logs:{uid}", json.dumps({"type": "log", "message": f"Signal found: {pair} {direction} (1.0%)", "timestamp": time.time()}))
     start_user_session(uid, session_id, {"pairs": pairs, "strategy_id": payload.strategy_id, "timeframe": payload.timeframe})
+    from .tasks import heartbeat_pulse
+    heartbeat_pulse.apply_async(args=[uid, session_id, 10], queue=user_queue(uid, session_id))
     with SessionLocal() as db:
         db.add(DbSession(id=session_id, user_id=uid, mode="signal", status="running"))
         db.commit()
@@ -107,7 +139,15 @@ def signal_stop(payload: SignalStopRequest, authorization: Optional[str] = Heade
     if not r.exists(key):
         raise HTTPException(status_code=404, detail="session not found")
     r.hset(key, "status", "halted")
+    worker_arn = r.hget(key, "worker_arn")
+    if worker_arn:
+        stop_user_worker(worker_arn)
     r.publish(f"signals:{uid}", json.dumps({"type": "session_halted", "session_id": payload.session_id}))
+    with SessionLocal() as db:
+        obj = db.get(DbSession, payload.session_id)
+        if obj and obj.user_id == uid:
+            obj.status = "halted"
+            db.commit()
     return {"status": "halted"}
 
 
@@ -148,7 +188,7 @@ def session_start(config: AutoTradingConfig, authorization: Optional[str] = Head
     pairs = config.pairs or OTC_PAIRS
     start_user_session(uid, session_id, {"pairs": pairs, "strategy_id": config.strategy_id, "timeframe": config.timeframe, "amount": config.trade_amount})
     from .tasks import heartbeat_pulse
-    heartbeat_pulse.apply_async(args=[uid, session_id, 10], queue=f"user:{uid}:{session_id}")
+    heartbeat_pulse.apply_async(args=[uid, session_id, 10], queue=user_queue(uid, session_id))
     with SessionLocal() as db:
         db.add(DbSession(id=session_id, user_id=uid, mode="auto", status="running"))
         db.commit()

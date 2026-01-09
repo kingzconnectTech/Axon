@@ -41,7 +41,7 @@ class IQOptionClient:
             status = r.hget(f"agent:{uid}:status", "status")
             if status == "connected":
                 # Ping to verify
-                pong = self._send_command("ping", timeout=2)
+                pong = self._send_command("ping", timeout=5)
                 if pong == "pong":
                     self._connected = True
                     # Ensure account type matches
@@ -76,6 +76,18 @@ class IQOptionClient:
                      r.delete(f"agent:{uid}:status")
 
             # Start Agent
+            # Cleanup previous agent if any
+            old_pid = r.hget(f"agent:{uid}:status", "pid")
+            if old_pid:
+                try:
+                    pid_int = int(old_pid)
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/F", "/PID", str(pid_int)], capture_output=True)
+                    else:
+                        os.kill(pid_int, 9)
+                except:
+                    pass
+
             print(f"[IQClient] Spawning agent for {uid}")
             env = os.environ.copy()
             env["REDIS_HOST"] = redis_host
@@ -106,13 +118,13 @@ class IQOptionClient:
                 return False
 
             # Wait for connection
-            for _ in range(40): # Wait up to 20 seconds (IQ login can be slow)
+            for _ in range(60): # Wait up to 30 seconds (IQ login can be slow with retries)
                 time.sleep(0.5)
                 status = r.hget(f"agent:{uid}:status", "status")
                 if status == "connected":
                     self._connected = True
                     return True
-                if status == "failed":
+                if status in ["failed", "error"]:
                     err = r.hget(f"agent:{uid}:status", "error")
                     self._last_error = {"error_code": "LOGIN_FAILED", "detail": err}
                     return False

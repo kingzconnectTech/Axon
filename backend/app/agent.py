@@ -4,6 +4,47 @@ import json
 import time
 import redis
 from iqoptionapi.stable_api import IQ_Option
+from iqoptionapi.api import IQOptionAPI
+from iqoptionapi.http.login import Login
+import iqoptionapi.global_value as global_value
+
+# --- Monkey Patch to use auth.iqbroker.com and ws.iqoption.com ---
+def custom_login_post(self, data=None, headers=None):
+    # Use auth.iqbroker.com for login
+    return self.api.send_http_request_v2(method="POST", url="https://auth.iqbroker.com/api/v2/login", data=data, headers=headers)
+
+Login._post = custom_login_post
+
+def custom_connect(self):
+    try:
+        self.api.close()
+    except:
+        pass
+
+    # Use ws.iqoption.com for WebSocket (it's reachable)
+    self.api = IQOptionAPI("ws.iqoption.com", self.email, self.password)
+    check = None
+    
+    # Update User-Agent to avoid 429
+    self.SESSION_HEADER = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    self.api.set_session(headers=self.SESSION_HEADER, cookies=self.SESSION_COOKIE)
+    check, reason = self.api.connect()
+
+    if check == True:
+        self.re_subscribe_stream()
+        while global_value.balance_id == None:
+            pass
+        self.position_change_all("subscribeMessage", global_value.balance_id)
+        self.order_changed_all("subscribeMessage")
+        self.api.setOptions(1, True)
+        
+    return check, reason
+
+IQ_Option.connect = custom_connect
+# ----------------------------------------
 
 # Redis config
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
@@ -42,15 +83,73 @@ def main():
     # Initialize IQ Option API
     api = IQ_Option(email, password)
     
-    # Connect
-    check, reason = api.connect()
+    # Register PID immediately
+    r.hmset(f"agent:{uid}:status", {
+        "status": "starting",
+        "pid": os.getpid(),
+        "error": "",
+        "updated_at": int(time.time())
+    })
+    
+    # Connect with retry
+    check = False
+    reason = "Unknown"
+    for i in range(5):
+        try:
+            print(f"[Agent {uid}] Connection attempt {i+1}/5...")
+            r.hmset(f"agent:{uid}:status", {
+                "status": "connecting",
+                "pid": os.getpid(),
+                "error": "",
+                "updated_at": int(time.time())
+            })
+            check, reason = api.connect()
+            if check:
+                break
+            
+            if reason and "requests_limit_exceeded" in str(reason):
+                ttl = 60
+                try:
+                    r_data = json.loads(reason) if isinstance(reason, str) else reason
+                    if isinstance(r_data, dict):
+                        ttl = int(r_data.get("ttl", 60))
+                except:
+                    pass
+                
+                print(f"[Agent {uid}] Rate limit exceeded. Waiting {ttl}s...")
+                
+                # Report error to Redis so frontend knows immediately
+                r.hmset(f"agent:{uid}:status", {
+                    "status": "error",
+                    "error": str(reason),
+                    "updated_at": int(time.time())
+                })
+                
+                time.sleep(ttl)
+                continue
+
+            r.hmset(f"agent:{uid}:status", {
+                "status": "error",
+                "error": str(reason),
+                "updated_at": int(time.time())
+            })
+            print(f"[Agent {uid}] Connection failed: {reason}. Retrying in 2s...")
+        except Exception as e:
+            reason = str(e)
+            r.hmset(f"agent:{uid}:status", {
+                "status": "error",
+                "error": reason,
+                "updated_at": int(time.time())
+            })
+            print(f"[Agent {uid}] Connection exception: {e}. Retrying in 2s...")
+        time.sleep(2)
     
     if check:
         print(f"[Agent {uid}] Connected to IQ Option.")
         api.change_balance(account_type)
         
         # Set status in Redis
-        r.hset(f"agent:{uid}:status", mapping={
+        r.hmset(f"agent:{uid}:status", {
             "status": "connected", 
             "pid": os.getpid(),
             "start_time": time.time()
@@ -107,12 +206,47 @@ def main():
                         action = data.get("action") # "call" or "put"
                         duration = data.get("duration")
                         
-                        check_buy, id_buy = api.buy(amount, active, action, duration)
-                        if check_buy:
-                            response["result"] = id_buy
-                        else:
+                        try:
+                            # Check connection
+                            if not api.check_connect():
+                                print(f"[Agent {uid}] Connection lost before buy. Reconnecting...")
+                                if api.connect()[0]:
+                                    api.change_balance(account_type)
+                                else:
+                                    print(f"[Agent {uid}] Reconnect before buy failed.")
+
+                            print(f"[Agent {uid}] Placing trade: {active} {action} ${amount} (duration: {duration})")
+                            check_buy, id_buy = api.buy(amount, active, action, duration)
+                            
+                            if check_buy:
+                                print(f"[Agent {uid}] Trade placed successfully. ID: {id_buy}")
+                                response["result"] = id_buy
+                            else:
+                                print(f"[Agent {uid}] Trade placement failed. Result: {check_buy}, {id_buy}")
+                                r.publish(f"logs:{uid}", json.dumps({
+                                    "type": "error",
+                                    "message": f"Trade placement failed for {active}: {id_buy}",
+                                    "timestamp": time.time()
+                                }))
+                                # Try one reconnect and retry
+                                print(f"[Agent {uid}] Retrying trade after reconnect...")
+                                if api.connect()[0]:
+                                    api.change_balance(account_type)
+                                    check_buy, id_buy = api.buy(amount, active, action, duration)
+                                    if check_buy:
+                                        print(f"[Agent {uid}] Retry trade success. ID: {id_buy}")
+                                        response["result"] = id_buy
+                                    else:
+                                        print(f"[Agent {uid}] Retry trade failed.")
+                                        response["status"] = "error"
+                                        response["error"] = f"Buy failed: {id_buy}"
+                                else:
+                                    response["status"] = "error"
+                                    response["error"] = "Buy failed and reconnect failed"
+                        except Exception as e:
+                            print(f"[Agent {uid}] Buy command exception: {e}")
                             response["status"] = "error"
-                            response["error"] = "Buy failed"
+                            response["error"] = str(e)
                             
                     elif cmd == "check_win":
                         id_number = data.get("order_id")

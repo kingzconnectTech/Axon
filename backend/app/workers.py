@@ -47,6 +47,13 @@ def stop_user_worker(task_arn: str) -> bool:
     cluster = os.getenv("ECS_CLUSTER")
     if not cluster or not task_arn:
         return False
+    try:
+        import boto3
+        ecs = boto3.client("ecs", region_name=os.getenv("AWS_REGION", "us-east-1"))
+        ecs.stop_task(cluster=cluster, task=task_arn, reason="Session stopped")
+        return True
+    except Exception:
+        return False
 
 def spawn_beat() -> Optional[str]:
     cluster = os.getenv("ECS_CLUSTER")
@@ -89,11 +96,4 @@ def spawn_beat() -> Optional[str]:
     except Exception:
         return None
     return None
-    try:
-        import boto3
-        ecs = boto3.client("ecs", region_name=os.getenv("AWS_REGION", "us-east-1"))
-        ecs.stop_task(cluster=cluster, task=task_arn, reason="Session stopped")
-        return True
-    except Exception:
-        return False
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, SafeAreaView, Modal } from "react-native";
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, SafeAreaView, Modal, Vibration, Platform } from "react-native";
+import * as Notifications from 'expo-notifications';
 import { API_URL, WS_URL } from "../config";
 
 export default function SignalOnly({ idToken }) {
@@ -8,6 +9,8 @@ export default function SignalOnly({ idToken }) {
   const [timeframe, setTimeframe] = useState("1min");
   const [signals, setSignals] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [analyzingPair, setAnalyzingPair] = useState("");
+  const [signalBanner, setSignalBanner] = useState("");
   const [sessionId, setSessionId] = useState(null);
   const [ws, setWs] = useState(null);
   const [isRunning, setIsRunning] = useState(false);
@@ -15,7 +18,7 @@ export default function SignalOnly({ idToken }) {
   // Selectors
   const [availablePairs, setAvailablePairs] = useState([]);
   const [availableStrategies, setAvailableStrategies] = useState([]);
-  const [availableTimeframes] = useState(["1min", "2min", "3min", "5min", "15min", "1hour", "4hour", "1day"]);
+  const [availableTimeframes] = useState(["1min", "2min", "3min", "4min", "5min", "15min", "1hour", "4hour", "1day"]);
   const [showPairSelector, setShowPairSelector] = useState(false);
   const [showStrategySelector, setShowStrategySelector] = useState(false);
   const [showTimeframeSelector, setShowTimeframeSelector] = useState(false);
@@ -89,11 +92,15 @@ export default function SignalOnly({ idToken }) {
       .catch(e => console.log("Failed to fetch sessions", e));
 
     let closed = false;
+    let bannerTimer = null;
     const connect = () => {
       if (closed) return;
       const socket = new WebSocket(`${WS_URL}/ws/stream?token=${idToken}`);
       socket.onopen = () => {
-          // Connected
+          setLogs(prev => ["WebSocket connected.", ...prev]);
+      };
+      socket.onerror = () => {
+        setLogs(prev => ["WebSocket error.", ...prev]);
       };
       socket.onmessage = (event) => {
         try {
@@ -103,11 +110,32 @@ export default function SignalOnly({ idToken }) {
                 pair: msg.pair, 
                 direction: msg.direction, 
                 confidence: msg.confidence, 
+                timeframe: msg.timeframe,
                 timestamp: new Date().toLocaleTimeString() 
             };
             setSignals(prev => [newSignal, ...prev]);
+            const tf = msg.timeframe ? ` ${msg.timeframe}` : "";
+            const bannerText = `Signal: ${msg.pair}${tf} ${msg.direction}`;
+            setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${bannerText} (${msg.confidence}%)`, ...prev].slice(0, 100));
+            setSignalBanner(bannerText);
+            if (bannerTimer) clearTimeout(bannerTimer);
+            bannerTimer = setTimeout(() => setSignalBanner(""), 4000);
+            if (Platform.OS !== "web") {
+                Vibration.vibrate(250);
+                Notifications.scheduleNotificationAsync({
+                    content: {
+                        title: `Signal: ${msg.pair}`,
+                        body: `${msg.direction} @ ${msg.confidence}% (${msg.timeframe || 'unknown'})`,
+                        sound: 'default',
+                    },
+                    trigger: null,
+                }).catch(e => console.log("Failed to schedule local notification", e));
+            }
           } else if (msg.type === "log") {
               setLogs(prev => [`[${new Date(msg.timestamp * 1000).toLocaleTimeString()}] ${msg.message}`, ...prev].slice(0, 100));
+              if (typeof msg.message === "string" && msg.message.startsWith("Analyzing ")) {
+                setAnalyzingPair(msg.message.replace("Analyzing ", "").replace("...", ""));
+              }
           } else if (msg.type === "session_halted") {
               setIsRunning(false);
               setLogs(prev => ["Session halted by server.", ...prev]);
@@ -115,6 +143,7 @@ export default function SignalOnly({ idToken }) {
         } catch (e) {}
       };
       socket.onclose = () => {
+        setLogs(prev => ["WebSocket disconnected. Reconnecting...", ...prev]);
         if (!closed) setTimeout(connect, 3000);
       };
       setWs(socket);
@@ -122,6 +151,7 @@ export default function SignalOnly({ idToken }) {
     connect();
     return () => {
       closed = true;
+      if (bannerTimer) clearTimeout(bannerTimer);
       try { ws && ws.close(); } catch (e) {}
     };
   }, [idToken]);
@@ -138,6 +168,7 @@ export default function SignalOnly({ idToken }) {
                 </View>
             </View>
             <Text style={styles.confidenceText}>Confidence: {item.confidence}%</Text>
+            {item.timeframe ? <Text style={styles.timeText}>Timeframe: {item.timeframe}</Text> : null}
             <Text style={styles.timeText}>{item.timestamp}</Text>
         </View>
       );
@@ -147,6 +178,8 @@ export default function SignalOnly({ idToken }) {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
           <Text style={styles.title}>Signal Stream</Text>
+          {analyzingPair ? <Text style={styles.subtitle}>Analyzing: {analyzingPair}</Text> : null}
+          {signalBanner ? <Text style={styles.signalBanner}>{signalBanner}</Text> : null}
       </View>
 
       {/* Controls */}
@@ -267,6 +300,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5', padding: 10 },
   header: { marginBottom: 15 },
   title: { fontSize: 24, fontWeight: 'bold' },
+  subtitle: { marginTop: 4, color: '#666' },
+  signalBanner: { marginTop: 6, color: '#111', backgroundColor: '#FFE08A', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, alignSelf: 'flex-start' },
   controls: { flexDirection: 'row', marginBottom: 15 },
   selector: { backgroundColor: 'white', padding: 10, borderRadius: 8, flex: 1, marginHorizontal: 4 },
   selectorLabel: { fontSize: 12, color: '#666' },

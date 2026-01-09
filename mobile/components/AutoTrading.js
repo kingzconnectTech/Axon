@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, Modal, FlatList } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, Modal, FlatList, Vibration, Platform } from "react-native";
+import * as Notifications from 'expo-notifications';
 import { API_URL, WS_URL } from "../config";
 
 export default function AutoTrading({ idToken }) {
@@ -25,18 +26,24 @@ export default function AutoTrading({ idToken }) {
   const [balance, setBalance] = useState(null);
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState("");
+  const [connectRetryMinutes, setConnectRetryMinutes] = useState(null);
   const [heartbeatLatency, setHeartbeatLatency] = useState(0);
   const [missedCount, setMissedCount] = useState(0);
   const [rejectCount, setRejectCount] = useState(0);
   const [retryCount, setRetryCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [logs, setLogs] = useState([]);
+  const [analyzingPair, setAnalyzingPair] = useState("");
+  const [signalBanner, setSignalBanner] = useState("");
 
   // Selector state
   const [availablePairs, setAvailablePairs] = useState([]);
   const [availableStrategies, setAvailableStrategies] = useState([]);
   const [showPairSelector, setShowPairSelector] = useState(false);
   const [showStrategySelector, setShowStrategySelector] = useState(false);
+  const [showTimeframeSelector, setShowTimeframeSelector] = useState(false);
+  
+  const timeframes = ["1min", "2min", "3min", "4min", "5min", "15min", "30min", "1hr", "4hr", "1day"];
 
   const adviceForCode = (code) => {
     if (!code) return "";
@@ -48,6 +55,63 @@ export default function AutoTrading({ idToken }) {
     if (c.includes("TRADE_EXPIRED")) return "Trade expired. Try placing a new trade.";
     if (c.includes("LOGIN_FAILED") || c.includes("AUTH_FAILED")) return "Authentication failed. Check credentials.";
     return "";
+  };
+
+  const parseIqConnectError = (rawText) => {
+    const raw = String(rawText || "");
+    let detail = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.detail === "string") detail = parsed.detail;
+    } catch (e) {}
+
+    const firstBrace = detail.indexOf("{");
+    const lastBrace = detail.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const innerStr = detail.slice(firstBrace, lastBrace + 1);
+      try {
+        const inner = JSON.parse(innerStr);
+        const ttlSeconds = Number(inner.ttl);
+        const retryMinutes = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? Math.ceil(ttlSeconds / 60) : null;
+        return {
+          message: typeof inner.message === "string" ? inner.message : detail,
+          retryMinutes,
+        };
+      } catch (e) {}
+    }
+
+    return { message: detail, retryMinutes: null };
+  };
+
+  const connectIq = () => {
+    console.log("Connect button pressed");
+    setIsLoading(true);
+    setError("");
+    setConnectRetryMinutes(null);
+    fetch(`${API_URL}/iq/connect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({ username: iqUser, password: iqPass, account_type: accountType })
+    })
+      .then(async (res) => {
+        console.log("Connect response status:", res.status);
+        if (!res.ok) {
+          const errText = await res.text();
+          console.log("Connect error body:", errText);
+          throw new Error(errText || "connect failed");
+        }
+        await res.json();
+        setConnected(true);
+        setError("");
+        setConnectRetryMinutes(null);
+      })
+      .catch((e) => {
+        console.log("Connect exception:", e);
+        const parsed = parseIqConnectError(e?.message);
+        setError("Connect failed: " + (parsed.message || e?.message || "connect failed"));
+        setConnectRetryMinutes(parsed.retryMinutes);
+      })
+      .finally(() => setIsLoading(false));
   };
 
   useEffect(() => {
@@ -83,6 +147,7 @@ export default function AutoTrading({ idToken }) {
       .catch(() => setError("Status check failed"));
     let attempt = 0;
     let closed = false;
+    let bannerTimer = null;
     const connectWs = () => {
       if (closed) return;
       const socket = new WebSocket(`${WS_URL}/ws/stream?token=${idToken}`);
@@ -98,6 +163,24 @@ export default function AutoTrading({ idToken }) {
             setTrades(msg.trades ?? 0);
             setWins(msg.wins ?? 0);
             setLossStreak(msg.loss_streak ?? 0);
+          } else if (msg.type === "signal") {
+            const tf = msg.timeframe ? ` ${msg.timeframe}` : "";
+            const bannerText = `Signal: ${msg.pair}${tf} ${msg.direction}`;
+            setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${bannerText} (${msg.confidence}%)`, ...prev]);
+            setSignalBanner(bannerText);
+            if (bannerTimer) clearTimeout(bannerTimer);
+            bannerTimer = setTimeout(() => setSignalBanner(""), 4000);
+            if (Platform.OS !== "web") {
+                Vibration.vibrate(250);
+                Notifications.scheduleNotificationAsync({
+                    content: {
+                        title: `Auto Trade Signal: ${msg.pair}`,
+                        body: `${msg.direction} @ ${msg.confidence}% (${msg.timeframe || 'unknown'})`,
+                        sound: 'default',
+                    },
+                    trigger: null,
+                }).catch(e => console.log("Failed to schedule local notification", e));
+            }
           } else if (msg.type === "halt") {
             setHaltReason(msg.reason || "halted");
             setConnected(false);
@@ -113,6 +196,9 @@ export default function AutoTrading({ idToken }) {
             if (typeof msg.retry_count === "number") setRetryCount(msg.retry_count);
           } else if (msg.type === "log") {
             setLogs(prev => [`[${new Date(msg.timestamp * 1000).toLocaleTimeString()}] ${msg.message}`, ...prev]);
+            if (typeof msg.message === "string" && msg.message.startsWith("Analyzing ")) {
+              setAnalyzingPair(msg.message.replace("Analyzing ", "").replace("...", ""));
+            }
           }
         } catch (e) {}
       };
@@ -127,6 +213,7 @@ export default function AutoTrading({ idToken }) {
     connectWs();
     return () => {
       closed = true;
+      if (bannerTimer) clearTimeout(bannerTimer);
       try { ws && ws.close(); } catch (e) {}
     };
   }, [idToken]);
@@ -167,6 +254,16 @@ export default function AutoTrading({ idToken }) {
                 <Text style={styles.healthText}>Rejects: {rejectCount}</Text>
                 <Text style={styles.healthText}>Retries: {retryCount}</Text>
             </View>
+            {analyzingPair ? (
+              <View style={styles.healthRow}>
+                <Text style={styles.healthText}>Analyzing: {analyzingPair}</Text>
+              </View>
+            ) : null}
+            {signalBanner ? (
+              <View style={styles.healthRow}>
+                <Text style={styles.healthText}>{signalBanner}</Text>
+              </View>
+            ) : null}
         </View>
 
         {haltReason ? (
@@ -251,32 +348,7 @@ export default function AutoTrading({ idToken }) {
         <View style={styles.buttonRow}>
             <TouchableOpacity
               disabled={isLoading}
-              onPress={() => {
-                console.log("Connect button pressed");
-                setIsLoading(true);
-                setError("");
-                fetch(`${API_URL}/iq/connect`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-                  body: JSON.stringify({ username: iqUser, password: iqPass, account_type: accountType })
-                })
-                  .then(async (res) => {
-                    console.log("Connect response status:", res.status);
-                    if (!res.ok) {
-                        const errText = await res.text();
-                        console.log("Connect error body:", errText);
-                        throw new Error(errText || "connect failed");
-                    }
-                    await res.json();
-                    setConnected(true);
-                    setError("");
-                  })
-                  .catch((e) => {
-                      console.log("Connect exception:", e);
-                      setError("Connect failed: " + e.message);
-                  })
-                  .finally(() => setIsLoading(false));
-              }}
+              onPress={connectIq}
               style={[styles.button, styles.primaryButton, { flex: 1, marginRight: 8, opacity: isLoading ? 0.7 : 1 }]}
             >
               {isLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Connect</Text>}
@@ -296,23 +368,17 @@ export default function AutoTrading({ idToken }) {
               <Text style={styles.outlineButtonText}>Disconnect</Text>
             </TouchableOpacity>
         </View>
+
+        {typeof connectRetryMinutes === "number" && connectRetryMinutes > 0 ? (
+          <View style={styles.retryBox}>
+            <Text style={styles.retryText}>Try again in {connectRetryMinutes} minutes.</Text>
+          </View>
+        ) : null}
         
         {(!connected && errorCode && errorCode.toLowerCase().includes("login")) && (
              <TouchableOpacity
              onPress={() => {
-               fetch(`${API_URL}/iq/connect`, {
-                 method: "POST",
-                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-                 body: JSON.stringify({ username: iqUser, password: iqPass, account_type: accountType })
-               })
-                 .then(async (res) => {
-                   if (!res.ok) throw new Error("connect failed");
-                   await res.json();
-                   setConnected(true);
-                   setError("");
-                   setErrorCode("");
-                 })
-                 .catch(() => setError("Retry connect failed"));
+               connectIq();
              }}
              style={[styles.button, styles.secondaryButton, { marginTop: 10 }]}
            >
@@ -357,12 +423,9 @@ export default function AutoTrading({ idToken }) {
             </View>
             <View style={[styles.inputGroup, { flex: 1 }]}>
                 <Text style={styles.label}>Timeframe</Text>
-                <TextInput 
-                    value={timeframe} 
-                    onChangeText={setTimeframe} 
-                    placeholder="5min" 
-                    style={styles.input} 
-                />
+                <TouchableOpacity onPress={() => setShowTimeframeSelector(true)} style={[styles.input, { justifyContent: 'center' }]}>
+                    <Text style={{ color: timeframe ? '#000' : '#aaa' }}>{timeframe || "5min"}</Text>
+                </TouchableOpacity>
             </View>
         </View>
 
@@ -500,6 +563,29 @@ export default function AutoTrading({ idToken }) {
       <View style={{ height: 40 }} />
 
       {/* Selectors */}
+      <Modal visible={showTimeframeSelector} animationType="slide" transparent={true} onRequestClose={() => setShowTimeframeSelector(false)}>
+          <View style={{ flex: 1, justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+              <View style={{ margin: 20, backgroundColor: 'white', borderRadius: 10, padding: 20, maxHeight: '80%' }}>
+                  <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 10 }}>Select Timeframe</Text>
+                  <FlatList 
+                      data={timeframes}
+                      keyExtractor={(item) => item}
+                      renderItem={({ item }) => (
+                          <TouchableOpacity 
+                              style={{ padding: 15, borderBottomWidth: 1, borderBottomColor: '#eee' }}
+                              onPress={() => { setTimeframe(item); setShowTimeframeSelector(false); }}
+                          >
+                              <Text style={{fontSize: 16}}>{item}</Text>
+                          </TouchableOpacity>
+                      )}
+                  />
+                  <TouchableOpacity onPress={() => setShowTimeframeSelector(false)} style={{ marginTop: 15, padding: 10, alignItems: 'center', backgroundColor: '#f0f0f0', borderRadius: 8 }}>
+                      <Text style={{ color: 'red', fontWeight: 'bold' }}>Cancel</Text>
+                  </TouchableOpacity>
+              </View>
+          </View>
+      </Modal>
+
       <Modal visible={showStrategySelector} animationType="slide" transparent={true} onRequestClose={() => setShowStrategySelector(false)}>
           <View style={{ flex: 1, justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
               <View style={{ margin: 20, backgroundColor: 'white', borderRadius: 10, padding: 20, maxHeight: '80%' }}>
@@ -790,5 +876,18 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 8,
     fontStyle: "italic",
+  },
+  retryBox: {
+    backgroundColor: "#FFF4E5",
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: "#FF9500",
+  },
+  retryText: {
+    color: "#FF9500",
+    fontWeight: "bold",
+    textAlign: "center",
   },
 });
